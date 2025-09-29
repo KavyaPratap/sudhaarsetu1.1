@@ -26,11 +26,6 @@ const ParseCommandOutputSchema = z.object({
 });
 export type ParseCommandOutput = z.infer<typeof ParseCommandOutputSchema>;
 
-export async function parseCommand(
-  input: ParseCommandInput
-): Promise<ParseCommandOutput> {
-  return parseCommandFlow(input);
-}
 
 const prompt = ai.definePrompt({
   name: 'parseCommandPrompt',
@@ -68,3 +63,10 @@ const parseCommandFlow = ai.defineFlow(
     return output!;
   }
 );
+
+
+export async function parseCommand(
+  input: ParseCommandInput
+): Promise<ParseCommandOutput> {
+  return parseCommandFlow(input);
+}
