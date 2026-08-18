@@ -149,7 +149,11 @@ export async function login(prevState: ActionResponse, formData: FormData): Prom
     }
   } catch (error: any) {
     if (error.digest?.startsWith('NEXT_REDIRECT')) throw error;
-    return { success: false, error: error.message || 'Login failed. Please check credentials.' };
+    let message = error.message || 'Login failed. Please check credentials.';
+    if (message.includes('Could not load the default credentials') || message.includes('Credential Implementation')) {
+      message = 'Firebase Admin Service Account Key missing. Please set FIREBASE_PRIVATE_KEY and FIREBASE_CLIENT_EMAIL in Vercel Environment Variables.';
+    }
+    return { success: false, error: message };
   }
 
   revalidatePath('/', 'layout');
