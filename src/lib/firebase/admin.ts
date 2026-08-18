@@ -20,8 +20,7 @@ function getAdminApp() {
   if (
     clientEmail &&
     privateKey &&
-    privateKey.includes('-----BEGIN PRIVATE KEY-----') &&
-    !privateKey.includes('MIIEvgIBADANBgkqhki')
+    privateKey.includes('-----BEGIN PRIVATE KEY-----')
   ) {
     try {
       return initializeApp({
