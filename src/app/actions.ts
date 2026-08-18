@@ -394,9 +394,12 @@ export async function runIssueAnalysis(
   try {
     const result = await analyzeIssue({ spokenDescription, language, photoDataUri });
     return { success: true, data: result };
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error running AI analysis:', error);
-    const message = error instanceof Error ? error.message : 'An unknown error occurred during analysis.';
+    let message = error instanceof Error ? error.message : 'An unknown error occurred during analysis.';
+    if (message.includes('Unable to authenticate your request') || message.includes('GoogleAuthError')) {
+      message = 'Vertex AI authentication required. Please set FIREBASE_PRIVATE_KEY or GCP_PRIVATE_KEY in your Vercel Environment Variables.';
+    }
     return { success: false, error: message };
   }
 }
