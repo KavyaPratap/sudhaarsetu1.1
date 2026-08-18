@@ -1,4 +1,3 @@
-
 'use client';
 
 import * as React from 'react';
@@ -10,7 +9,8 @@ import {
   PopoverTrigger,
 } from '@/components/ui/popover';
 import { Button } from '@/components/ui/button';
-import { createClient } from '@/lib/supabase/client';
+import { db } from '@/lib/firebase/config';
+import { collection, query, where, orderBy, onSnapshot } from 'firebase/firestore';
 import { formatDistanceToNow } from 'date-fns';
 import { markNotificationAsRead } from '@/app/actions';
 import { useRouter } from 'next/navigation';
@@ -29,39 +29,34 @@ type Notification = {
 export default function NotificationBell({ userId }: { userId: string }) {
   const [notifications, setNotifications] = React.useState<Notification[]>([]);
   const [unreadCount, setUnreadCount] = React.useState(0);
-  const supabase = createClient();
   const router = useRouter();
 
   React.useEffect(() => {
-    const fetchNotifications = async () => {
-      const { data, count } = await supabase
-        .from('notifications')
-        .select('*', { count: 'exact' })
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false });
+    if (!userId) return;
 
-      setNotifications(data || []);
-      const unread = data?.filter(n => !n.is_read).length || 0;
-      setUnreadCount(unread);
-    };
+    const q = query(
+      collection(db, 'notifications'),
+      where('user_id', '==', userId),
+      orderBy('created_at', 'desc')
+    );
 
-    fetchNotifications();
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const list: Notification[] = [];
+      snapshot.forEach((doc) => {
+        list.push({ id: doc.id, ...doc.data() } as Notification);
+      });
+      setNotifications(list);
+      setUnreadCount(list.filter((n) => !n.is_read).length);
+    }, (error) => {
+      if (error?.code === 'permission-denied') {
+        console.warn('Notifications permission denied (check Firebase rules or authentication state).');
+        return;
+      }
+      console.error('Error fetching notifications:', error);
+    });
 
-    const channel = supabase
-      .channel(`notifications:${userId}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'notifications', filter: `user_id=eq.${userId}` },
-        (payload) => {
-          fetchNotifications(); // Refetch on any change
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [userId, supabase]);
+    return () => unsubscribe();
+  }, [userId]);
 
   const handleNotificationClick = async (notification: Notification) => {
     if (!notification.is_read) {
@@ -69,17 +64,16 @@ export default function NotificationBell({ userId }: { userId: string }) {
     }
     router.push(notification.link);
   };
-  
+
   const handleMarkAllAsRead = async () => {
     const unreadIds = notifications.filter(n => !n.is_read).map(n => n.id);
-    if(unreadIds.length === 0) return;
-    
-    // Optimistic update
-    setNotifications(prev => prev.map(n => ({...n, is_read: true})));
+    if (unreadIds.length === 0) return;
+
+    setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
     setUnreadCount(0);
-    
+
     await Promise.all(unreadIds.map(id => markNotificationAsRead(id)));
-  }
+  };
 
   return (
     <Popover>
@@ -96,8 +90,8 @@ export default function NotificationBell({ userId }: { userId: string }) {
       </PopoverTrigger>
       <PopoverContent className="w-80 p-0">
         <div className="flex justify-between items-center p-4">
-            <h4 className="font-medium leading-none">Notifications</h4>
-            {unreadCount > 0 && <Button variant="link" size="sm" onClick={handleMarkAllAsRead}>Mark all as read</Button>}
+          <h4 className="font-medium leading-none">Notifications</h4>
+          {unreadCount > 0 && <Button variant="link" size="sm" onClick={handleMarkAllAsRead}>Mark all as read</Button>}
         </div>
         <Separator />
         <div className="max-h-96 overflow-y-auto">
@@ -108,35 +102,35 @@ export default function NotificationBell({ userId }: { userId: string }) {
                 onClick={() => handleNotificationClick(n)}
                 className="w-full text-left p-4 hover:bg-muted/50"
               >
-                 <div className="flex items-start gap-3">
-                    <div
-                        className={cn(
-                        'mt-1.5 h-2 w-2 shrink-0 rounded-full',
-                        !n.is_read && 'bg-primary'
-                        )}
-                    />
-                    <div className="flex-1">
-                        <p className="text-sm font-medium">{n.title}</p>
-                        <p className="text-xs text-muted-foreground mt-0.5">
-                            {formatDistanceToNow(new Date(n.created_at), { addSuffix: true })}
-                        </p>
-                    </div>
-                 </div>
+                <div className="flex items-start gap-3">
+                  <div
+                    className={cn(
+                      'mt-1.5 h-2 w-2 shrink-0 rounded-full',
+                      !n.is_read && 'bg-primary'
+                    )}
+                  />
+                  <div className="flex-1">
+                    <p className="text-sm font-medium">{n.title}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {formatDistanceToNow(new Date(n.created_at || Date.now()), { addSuffix: true })}
+                    </p>
+                  </div>
+                </div>
               </button>
             ))
           ) : (
             <div className="flex flex-col items-center gap-2 text-center p-8">
-                <Package className="h-8 w-8 text-muted-foreground"/>
-                <p className="text-sm text-muted-foreground">No notifications yet.</p>
+              <Package className="h-8 w-8 text-muted-foreground" />
+              <p className="text-sm text-muted-foreground">No notifications yet.</p>
             </div>
           )}
         </div>
-         <Separator />
-         <div className="p-2">
-            <Button variant="ghost" size="sm" className="w-full" asChild>
-                <Link href="/notifications">View all notifications</Link>
-            </Button>
-         </div>
+        <Separator />
+        <div className="p-2">
+          <Button variant="ghost" size="sm" className="w-full" asChild>
+            <Link href="/notifications">View all notifications</Link>
+          </Button>
+        </div>
       </PopoverContent>
     </Popover>
   );

@@ -1,8 +1,7 @@
-
 'use client';
 
 import * as React from 'react';
-import { useFormState } from 'react-dom';
+import { useActionState } from 'react';
 import { useFormStatus } from 'react-dom';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -13,7 +12,7 @@ import { useToast } from '@/hooks/use-toast';
 import { updateIssueStatus } from './actions';
 import type { Issue, IssueStatus } from '@/lib/types';
 
-function SubmitButton({disabled}: {disabled: boolean}) {
+function SubmitButton({ disabled }: { disabled: boolean }) {
   const { pending } = useFormStatus();
   return (
     <Button type="submit" disabled={pending || disabled}>
@@ -27,7 +26,7 @@ export default function UpdateStatusForm({ issue }: { issue: Issue }) {
   const { toast } = useToast();
   const [newStatus, setNewStatus] = React.useState<IssueStatus>(issue.status);
 
-  const [state, formAction] = useFormState(updateIssueStatus, null);
+  const [state, formAction] = useActionState(updateIssueStatus, null);
 
   React.useEffect(() => {
     if (state?.success) {

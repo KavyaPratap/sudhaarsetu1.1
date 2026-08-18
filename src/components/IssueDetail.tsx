@@ -29,7 +29,8 @@ import { Button } from './ui/button';
 import { deleteIssue } from '@/app/actions';
 import { useToast } from '@/hooks/use-toast';
 import { useRouter } from 'next/navigation';
-import { createClient } from '@/lib/supabase/client';
+import { auth } from '@/lib/firebase/config';
+import { onAuthStateChanged } from 'firebase/auth';
 
 const IssueLocationMap = dynamic(() => import('./IssueLocationMap'), {
   ssr: false,
@@ -83,15 +84,13 @@ export default function IssueDetail({ issue, onOpenChange, onDelete }: IssueDeta
     const [showDeleteConfirm, setShowDeleteConfirm] = React.useState(false);
     const [currentUserId, setCurrentUserId] = React.useState<string | null>(null);
     const { toast } = useToast();
-    const supabase = createClient();
 
     React.useEffect(() => {
-        const getUser = async () => {
-            const { data: { user } } = await supabase.auth.getUser();
-            setCurrentUserId(user?.id || null);
-        };
-        getUser();
-    }, [supabase]);
+        const unsubscribe = onAuthStateChanged(auth, (user) => {
+            setCurrentUserId(user?.uid || null);
+        });
+        return () => unsubscribe();
+    }, []);
     
     const isOwner = issue.reportedBy === currentUserId;
 

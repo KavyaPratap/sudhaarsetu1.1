@@ -1,14 +1,13 @@
-
 'use server';
 
 import { z } from 'zod';
-import { cookies } from 'next/headers';
-import { createClient } from '@/lib/supabase/server';
+import { revalidatePath } from 'next/cache';
+import { adminDb, adminStorage } from '@/lib/firebase/admin';
+import { getCurrentUser } from '@/lib/firebase/server-auth';
 import { filterFalseComplaints } from '@/ai/flows/filter-false-complaints';
 import { calculateUrgencyScore } from '@/ai/flows/calculate-urgency-score';
-import type { Issue } from '@/lib/types';
-import { revalidatePath } from 'next/cache';
 import { analyzeIssue } from '@/ai/flows/analyze-issue';
+import type { Issue } from '@/lib/types';
 
 const issueSchema = z.object({
   title: z.string().min(5, { message: 'Title is too short.' }),
@@ -23,9 +22,8 @@ const issueSchema = z.object({
   reportAnyway: z.string().optional().nullable(),
 });
 
-
 type ActionResponse =
-  | { success: true; issue: Issue, isDuplicate?: boolean }
+  | { success: true; issue: Issue; isDuplicate?: boolean }
   | { success: false; error: string; nearbyIssues?: { id: string; title: string; status: string }[] };
 
 const categoryToDept: Record<string, string> = {
@@ -43,25 +41,56 @@ async function fileToDataUri(file: File) {
   return `data:${mimeType};base64,${buffer.toString('base64')}`;
 }
 
+function getDistanceMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371000;
+  const dLat = (lat2 - lat1) * (Math.PI / 180);
+  const dLon = (lon2 - lon1) * (Math.PI / 180);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+async function findNearbyIssues(lat: number, lng: number, radiusMeters: number = 100) {
+  try {
+    const snapshot = await adminDb.collection('issues').get();
+    const nearby: { id: string; title: string; status: string }[] = [];
+    snapshot.forEach((doc) => {
+      const data = doc.data();
+      if (data.location && typeof data.location.lat === 'number' && typeof data.location.lng === 'number') {
+        const dist = getDistanceMeters(lat, lng, data.location.lat, data.location.lng);
+        if (dist <= radiusMeters) {
+          nearby.push({
+            id: doc.id,
+            title: data.title || 'Untitled Issue',
+            status: data.status || 'Pending',
+          });
+        }
+      }
+    });
+    return nearby;
+  } catch (error) {
+    console.error('Error finding nearby issues:', error);
+    return [];
+  }
+}
+
 export async function submitIssue(
   prevState: ActionResponse | null,
   formData: FormData
 ): Promise<ActionResponse> {
-  const cookieStore = cookies();
-  const supabase = createClient(cookieStore);
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
 
   if (!user) {
     return { success: false, error: 'You must be logged in to submit an issue.' };
   }
-  
-  const photoFiles = formData.getAll('photos').filter(p => p instanceof File && p.size > 0) as File[];
+
+  const photoFiles = formData.getAll('photos').filter((p) => p instanceof File && p.size > 0) as File[];
 
   if (photoFiles.length === 0) {
-      return { success: false, error: 'At least one photo is required.' };
+    return { success: false, error: 'At least one photo is required.' };
   }
 
   const rawData = {
@@ -78,7 +107,6 @@ export async function submitIssue(
   const parseResult = issueSchema.safeParse(rawData);
 
   if (!parseResult.success) {
-    console.error('Validation Errors:', parseResult.error.flatten().fieldErrors);
     const firstError = parseResult.error.errors[0]?.message || 'Invalid data provided. Please check the form.';
     return { success: false, error: firstError };
   }
@@ -86,12 +114,12 @@ export async function submitIssue(
   const { title, description, category, photos, latitude, longitude, summary, reportAnyway } = parseResult.data;
 
   try {
-    // Step 1: ALWAYS run AI validation first.
+    // Step 1: AI validation
     const photosDataUriForValidation = await Promise.all(photos.map(fileToDataUri));
     const aiValidationResult = await filterFalseComplaints({
       photosDataUri: photosDataUriForValidation,
       description,
-      historicalData: 'No historical data available for this area.', // Placeholder
+      historicalData: 'No historical data available for this area.',
     });
 
     if (!aiValidationResult.isValidComplaint) {
@@ -101,108 +129,89 @@ export async function submitIssue(
       };
     }
 
-    // Step 2: Check for nearby issues, but only if the 'reportAnyway' flag is not set.
+    // Step 2: Duplicate check
     if (!reportAnyway) {
-        const { data: nearbyIssues } = await supabase
-            .rpc('find_nearby_issues', { lat: latitude, lng: longitude, radius_meters: 100 });
-            
-        if (nearbyIssues && nearbyIssues.length > 0) {
-            // Found duplicates. Ask the user what to do.
-            return {
-                success: false, // Not a final success, but not an error either
-                error: "A similar issue has already been reported nearby.",
-                nearbyIssues: nearbyIssues
-            };
-        }
+      const nearbyIssues = await findNearbyIssues(latitude, longitude, 100);
+      if (nearbyIssues.length > 0) {
+        return {
+          success: false,
+          error: 'A similar issue has already been reported nearby.',
+          nearbyIssues,
+        };
+      }
     }
-    
-    // Step 3: If validation passed and no duplicates were found (or were bypassed), proceed to create the issue.
-    
-    // Upload images to Supabase Storage
+
+    // Step 3: Upload images to Firebase Storage
     const imageUrls: string[] = [];
+    const bucket = adminStorage.bucket();
+
     for (const photo of photos) {
-        const fileName = `${user.id}/${Date.now()}-${photo.name}`;
-        const { error: uploadError } = await supabase.storage
-            .from('issues')
-            .upload(fileName, photo);
+      const fileName = `issues/${user.id}/${Date.now()}-${photo.name}`;
+      const fileBuffer = Buffer.from(await photo.arrayBuffer());
+      const fileRef = bucket.file(fileName);
 
-        if (uploadError) {
-            console.error('Storage Upload Error:', uploadError);
-            throw new Error('Could not upload issue image.');
-        }
+      await fileRef.save(fileBuffer, {
+        contentType: photo.type || 'image/jpeg',
+        metadata: { firebaseStorageDownloadTokens: Date.now().toString() },
+      });
 
-        const { data: urlData } = supabase.storage
-            .from('issues')
-            .getPublicUrl(fileName);
-            
-        imageUrls.push(urlData.publicUrl);
+      // Construct public download URL
+      const publicUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(fileName)}?alt=media`;
+      imageUrls.push(publicUrl);
     }
-    
-    // Calculate initial urgency score
-    const photosDataUriForUrgency = await Promise.all(photos.map(fileToDataUri));
+
+    // Step 4: Calculate urgency score
     const urgencyResult = await calculateUrgencyScore({
-        description,
-        photosDataUri: photosDataUriForUrgency,
-        upvotes: 1, // Start with 1 for the reporter
-        downvotes: 0,
-        userFrustration: 3,
-        userUrgency: 3,
+      description,
+      photosDataUri: photosDataUriForValidation,
+      upvotes: 1,
+      downvotes: 0,
+      userFrustration: 3,
+      userUrgency: 3,
     });
 
     const reportedAt = new Date();
+    const issueRef = adminDb.collection('issues').doc();
 
-    // Create the new issue object
     const newIssueData = {
+      id: issueRef.id,
       title,
-      summary: summary || description.substring(0, 150), // Fallback summary
+      summary: summary || description.substring(0, 150),
       description,
       category,
       status: 'Pending',
-      upvotes: 1, // Start with one upvote from the reporter
+      upvotes: 1,
+      downvotes: 0,
       urgency_score: urgencyResult.urgencyScore,
-      location: `POINT(${longitude} ${latitude})`,
+      location: { lat: latitude, lng: longitude },
       address: `Near ${latitude.toFixed(4)}, ${longitude.toFixed(4)}`,
-      imageUrls: imageUrls,
-      reportedBy: user.id, 
+      imageUrls,
+      reportedBy: user.id,
       reportedAt: reportedAt.toISOString(),
-      department: categoryToDept[category],
-      timeline: [{ status: 'Pending', date: reportedAt.toISOString(), notes: "Issue reported by citizen." }],
+      department: categoryToDept[category] || 'Nagar Nigam',
+      timeline: [{ status: 'Pending', date: reportedAt.toISOString(), notes: 'Issue reported by citizen.' }],
     };
 
-    // Insert the new issue into the database
-    const { data: insertedIssue, error: insertError } = await supabase
-        .from('issues')
-        .insert(newIssueData)
-        .select()
-        .single();
+    await issueRef.set(newIssueData);
 
-    if (insertError) {
-        console.error('Database Insert Error:', insertError);
-        throw new Error(`Could not save the issue to the database: ${insertError.message}`);
-    }
-
-    // Record the initial upvote from the reporter
-    await supabase.from('votes').insert({
-      issue_id: insertedIssue.id,
+    // Initial upvote record
+    await adminDb.collection('issues').doc(issueRef.id).collection('votes').doc(user.id).set({
       user_id: user.id,
       vote_type: 'upvote',
+      timestamp: new Date().toISOString(),
     });
 
     revalidatePath('/', 'layout');
     revalidatePath('/my-reports');
 
     const finalIssue = {
-        ...insertedIssue,
-        location: { lat: latitude, lng: longitude },
-        comments: [],
-        ratings: [],
-        upvotes: 1,
-        downvotes: 0,
-        reportedAt: new Date(insertedIssue.reportedAt),
-    }
+      ...newIssueData,
+      comments: [],
+      ratings: [],
+      reportedAt,
+    };
 
-    return { success: true, issue: finalIssue as Issue};
-
+    return { success: true, issue: finalIssue as unknown as Issue };
   } catch (error) {
     console.error('Error submitting issue:', error);
     const errorMessage = error instanceof Error ? error.message : 'An unexpected server error occurred.';
@@ -210,164 +219,141 @@ export async function submitIssue(
   }
 }
 
-// This action is now only for upvoting a duplicate.
-export async function upvoteExistingIssue(issueId: string): Promise<{success: boolean, error?: string, issue?: Issue}> {
-    const cookieStore = cookies();
-    const supabase = createClient(cookieStore);
+export async function upvoteExistingIssue(issueId: string): Promise<{ success: boolean; error?: string; issue?: Issue }> {
+  const user = await getCurrentUser();
+  if (!user) {
+    return { success: false, error: 'You must be logged in to vote.' };
+  }
 
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-        return { success: false, error: "You must be logged in to vote." };
-    }
+  await updateVote(issueId, 'upvote');
+  const doc = await adminDb.collection('issues').doc(issueId).get();
 
-    await updateVote(issueId, 'upvote');
-    const { data: existingIssue, error: fetchError } = await supabase
-        .from('issues')
-        .select('*')
-        .eq('id', issueId)
-        .single();
+  if (!doc.exists) {
+    return { success: false, error: 'Could not retrieve the existing issue after upvoting.' };
+  }
 
-    if (fetchError || !existingIssue) {
-        return { success: false, error: "Could not retrieve the existing issue after upvoting." };
-    }
-    
-    revalidatePath('/', 'layout');
+  const existingIssue = doc.data()!;
+  revalidatePath('/', 'layout');
 
-    return {
-        success: true,
-        issue: {
-            ...existingIssue,
-            location: { lat: existingIssue.latitude, lng: existingIssue.longitude },
-            reportedAt: new Date(existingIssue.reportedAt),
-        } as Issue,
-    };
+  return {
+    success: true,
+    issue: {
+      ...existingIssue,
+      reportedAt: new Date(existingIssue.reportedAt),
+    } as unknown as Issue,
+  };
 }
 
+export async function addComment(issueId: string, content: string): Promise<{ success: boolean; error?: string; comment?: any }> {
+  const user = await getCurrentUser();
+  if (!user) {
+    return { success: false, error: 'You must be logged in to comment.' };
+  }
 
-export async function addComment(issueId: string, content: string): Promise<{ success: boolean, error?: string, comment?: any }> {
-    const cookieStore = cookies();
-    const supabase = createClient(cookieStore);
+  if (!content || content.trim().length === 0) {
+    return { success: false, error: 'Comment cannot be empty.' };
+  }
 
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-        return { success: false, error: 'You must be logged in to comment.' };
-    }
+  const userDoc = await adminDb.collection('users').doc(user.id).get();
+  const profile = userDoc.exists ? userDoc.data() : null;
 
-    if (!content || content.trim().length === 0) {
-        return { success: false, error: 'Comment cannot be empty.' };
-    }
+  const commentRef = adminDb.collection('issues').doc(issueId).collection('comments').doc();
+  const now = new Date();
 
-    const { data: commentData, error } = await supabase
-        .from('comments')
-        .insert({
-            issue_id: issueId,
-            user_id: user.id,
-            content: content.trim(),
-        })
-        .select()
-        .single();
+  const commentData = {
+    id: commentRef.id,
+    issue_id: issueId,
+    user_id: user.id,
+    content: content.trim(),
+    created_at: now.toISOString(),
+  };
 
-    if (error) {
-        console.error('Error adding comment:', error);
-        return { success: false, error: 'Failed to add comment.' };
-    }
+  await commentRef.set(commentData);
 
-    const { data: profile } = await supabase
-        .from('profiles')
-        .select('full_name, avatar_url')
-        .eq('id', user.id)
-        .single();
-    
-    const formattedComment = {
-        id: commentData.id,
-        author: profile?.full_name || 'Anonymous',
-        avatar: profile?.avatar_url || '',
-        text: commentData.content,
-        timestamp: new Date(commentData.created_at),
-        user_id: commentData.user_id,
-    };
+  const formattedComment = {
+    id: commentRef.id,
+    author: profile?.full_name || user.full_name || 'Anonymous',
+    avatar: profile?.avatar_url || '',
+    text: commentData.content,
+    timestamp: now,
+    user_id: commentData.user_id,
+  };
 
-
-    return { success: true, comment: formattedComment };
+  return { success: true, comment: formattedComment };
 }
 
+export async function updateVote(
+  issueId: string,
+  type: 'upvote' | 'downvote'
+): Promise<{ success: boolean; data?: { new_upvotes: number; new_downvotes: number }; error?: string }> {
+  const user = await getCurrentUser();
+  if (!user) {
+    return { success: false, error: 'You must be logged in to vote.' };
+  }
 
-export async function updateVote(issueId: string, type: 'upvote' | 'downvote'): Promise<{ success: boolean, data?: { new_upvotes: number, new_downvotes: number}, error?: string }> {
-    const cookieStore = cookies();
-    const supabase = createClient(cookieStore);
+  try {
+    const issueRef = adminDb.collection('issues').doc(issueId);
+    const voteRef = issueRef.collection('votes').doc(user.id);
 
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-        return { success: false, error: 'You must be logged in to vote.' };
-    }
-    
-    const { data, error } = await supabase.rpc('handle_vote', {
-        issue_id_param: issueId,
-        user_id_param: user.id,
-        vote_type_param: type
-    }).single();
+    const result = await adminDb.runTransaction(async (transaction) => {
+      const issueDoc = await transaction.get(issueRef);
+      if (!issueDoc.exists) throw new Error('Issue not found.');
 
+      const voteDoc = await transaction.get(voteRef);
+      const data = issueDoc.data()!;
+      let upvotes = data.upvotes || 0;
+      let downvotes = data.downvotes || 0;
 
-    if (error) {
-        console.error('Error updating vote:', error);
-        if (error.message.includes('unique_user_issue_vote')) {
-            return { success: false, error: 'You have already voted on this issue.' };
+      if (voteDoc.exists) {
+        const existingVote = voteDoc.data()!.vote_type;
+        if (existingVote === type) {
+          throw new Error('You have already voted on this issue.');
         }
-        return { success: false, error: 'Failed to record vote.' };
-    }
-    
+        if (existingVote === 'upvote' && type === 'downvote') {
+          upvotes = Math.max(0, upvotes - 1);
+          downvotes += 1;
+        } else if (existingVote === 'downvote' && type === 'upvote') {
+          downvotes = Math.max(0, downvotes - 1);
+          upvotes += 1;
+        }
+      } else {
+        if (type === 'upvote') upvotes += 1;
+        if (type === 'downvote') downvotes += 1;
+      }
+
+      transaction.update(issueRef, { upvotes, downvotes });
+      transaction.set(voteRef, { user_id: user.id, vote_type: type, updated_at: new Date().toISOString() });
+
+      return { new_upvotes: upvotes, new_downvotes: downvotes };
+    });
+
     revalidatePath('/', 'layout');
-
-    return { success: true, data };
+    return { success: true, data: result };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to record vote.';
+    return { success: false, error: message };
+  }
 }
-
 
 export async function deleteIssue(issueId: string): Promise<{ success: boolean; error?: string }> {
-  const cookieStore = cookies();
-  const supabase = createClient(cookieStore);
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
+  const user = await getCurrentUser();
   if (!user) {
     return { success: false, error: 'You must be logged in to delete issues.' };
   }
 
-  const { data: issue, error: fetchError } = await supabase
-    .from('issues')
-    .select('reportedBy, imageUrls')
-    .eq('id', issueId)
-    .single();
+  const docRef = adminDb.collection('issues').doc(issueId);
+  const doc = await docRef.get();
 
-  if (fetchError || !issue) {
+  if (!doc.exists) {
     return { success: false, error: 'Could not find the issue to delete.' };
   }
 
+  const issue = doc.data()!;
   if (issue.reportedBy !== user.id) {
     return { success: false, error: 'You are not authorized to delete this issue.' };
   }
 
-  if (issue.imageUrls && issue.imageUrls.length > 0) {
-    const filePaths = issue.imageUrls.map(url => {
-      const parts = url.split('/');
-      return `${parts[parts.length - 2]}/${parts[parts.length - 1]}`;
-    });
-    
-    const { error: storageError } = await supabase.storage.from('issues').remove(filePaths);
-    
-    if (storageError) {
-      console.error('Error deleting issue images from storage:', storageError);
-    }
-  }
-
-
-  const { error: deleteError } = await supabase.from('issues').delete().eq('id', issueId);
-
-  if (deleteError) {
-    console.error('Error deleting issue:', deleteError);
-    return { success: false, error: 'Failed to delete the issue.' };
-  }
+  await docRef.delete();
 
   revalidatePath('/', 'layout');
   revalidatePath('/my-reports');
@@ -376,68 +362,44 @@ export async function deleteIssue(issueId: string): Promise<{ success: boolean; 
 }
 
 export async function markNotificationAsRead(notificationId: string) {
-    const cookieStore = cookies();
-    const supabase = createClient(cookieStore);
+  const user = await getCurrentUser();
+  if (!user) {
+    return { success: false, error: 'Authentication error' };
+  }
 
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-        return { success: false, error: 'Authentication error' };
-    }
+  await adminDb.collection('notifications').doc(notificationId).update({ is_read: true });
 
-    const { error } = await supabase
-        .from('notifications')
-        .update({ is_read: true })
-        .eq('id', notificationId)
-        .eq('user_id', user.id);
-    
-    if (error) {
-        return { success: false, error: 'Database error' };
-    }
-
-    revalidatePath('/', 'layout');
-    return { success: true };
+  revalidatePath('/', 'layout');
+  return { success: true };
 }
 
-
-// New action to check for nearby issues
-export async function checkForNearbyIssues(latitude: number, longitude: number): Promise<{ nearbyIssues: {id: string, title: string, status: string }[] | null, error?: string }> {
-    const cookieStore = cookies();
-    const supabase = createClient(cookieStore);
-
-    try {
-        const { data, error } = await supabase
-            .rpc('find_nearby_issues', { lat: latitude, lng: longitude, radius_meters: 100 });
-
-        if (error) {
-            console.error('Error checking for nearby issues:', error);
-            return { nearbyIssues: null, error: "Could not check for duplicates." };
-        }
-
-        return { nearbyIssues: data };
-    } catch(e) {
-        console.error('RPC Error:', e);
-        const errorMessage = e instanceof Error ? e.message : 'An unexpected server error occurred.';
-        return { nearbyIssues: null, error: errorMessage };
-    }
+export async function checkForNearbyIssues(
+  latitude: number,
+  longitude: number
+): Promise<{ nearbyIssues: { id: string; title: string; status: string }[] | null; error?: string }> {
+  try {
+    const nearbyIssues = await findNearbyIssues(latitude, longitude, 100);
+    return { nearbyIssues };
+  } catch (e) {
+    const errorMessage = e instanceof Error ? e.message : 'An unexpected server error occurred.';
+    return { nearbyIssues: null, error: errorMessage };
+  }
 }
-
 
 export async function runIssueAnalysis(
   language: string,
   spokenDescription?: string,
-  photoDataUri?: string,
+  photoDataUri?: string
 ): Promise<{ success: boolean; data?: any; error?: string }> {
   try {
     const result = await analyzeIssue({ spokenDescription, language, photoDataUri });
     return { success: true, data: result };
   } catch (error) {
     console.error('Error running AI analysis:', error);
-    const message =
-      error instanceof Error ? error.message : 'An unknown error occurred during analysis.';
+    const message = error instanceof Error ? error.message : 'An unknown error occurred during analysis.';
     return { success: false, error: message };
   }
 }
-
 
 const ratingSchema = z.object({
   comment: z.string().optional(),
@@ -450,51 +412,46 @@ export async function submitRating(
   prevState: { success: boolean; error: string | null },
   formData: FormData
 ): Promise<{ success: boolean; error: string | null }> {
-  const cookieStore = cookies();
-  const supabase = createClient(cookieStore);
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   if (!user) {
     return { success: false, error: 'You must be logged in to rate.' };
   }
-  
+
   if (rating === 0) {
-      return { success: false, error: 'Please select a star rating.' };
+    return { success: false, error: 'Please select a star rating.' };
   }
 
-  const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).single();
-  if (!profile) {
+  const userDoc = await adminDb.collection('users').doc(user.id).get();
+  if (!userDoc.exists) {
     return { success: false, error: 'Could not find your profile.' };
   }
+  const profile = userDoc.data()!;
 
   const parseResult = ratingSchema.safeParse(Object.fromEntries(formData));
   if (!parseResult.success) {
-      return { success: false, error: 'Invalid comment format.' };
+    return { success: false, error: 'Invalid comment format.' };
   }
   const { comment } = parseResult.data;
 
-  const { error } = await supabase.from('ratings').insert({
+  const ratingRef = adminDb.collection('ratings').doc(`${issueId}_${user.id}`);
+  const existingRating = await ratingRef.get();
+  if (existingRating.exists) {
+    return { success: false, error: 'You have already rated this work.' };
+  }
+
+  await ratingRef.set({
+    id: ratingRef.id,
     issue_id: issueId,
     worker_id: workerId,
     rated_by_user_id: user.id,
     rating,
-    comment,
-    rater_role: profile.role,
+    comment: comment || '',
+    rater_role: profile.role || 'citizen',
+    created_at: new Date().toISOString(),
   });
-
-  if (error) {
-      console.error('Error submitting rating:', error);
-      if (error.code === '23505') { // unique constraint violation
-        return { success: false, error: 'You have already rated this work.' };
-      }
-      return { success: false, error: `Database error: ${error.message}` };
-  }
 
   revalidatePath(`/admin/issue/${issueId}`);
   revalidatePath(`/my-reports`);
-  
+
   return { success: true, error: null };
 }
-
-    
-    

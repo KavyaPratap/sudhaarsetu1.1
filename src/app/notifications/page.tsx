@@ -1,93 +1,90 @@
+'use client';
 
-'use client'
-
-import * as React from 'react'
-import { createClient } from '@/lib/supabase/client'
-import { useToast } from '@/hooks/use-toast'
-import { Loader2, BellRing, BellOff } from 'lucide-react'
-import { formatDistanceToNow } from 'date-fns'
-import { useRouter } from 'next/navigation'
-import Header from '@/components/Header'
-import BottomNavBar from '@/components/BottomNavBar'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
-import { markNotificationAsRead } from '@/app/actions'
-import { cn } from '@/lib/utils'
+import * as React from 'react';
+import { auth, db } from '@/lib/firebase/config';
+import { onAuthStateChanged } from 'firebase/auth';
+import { collection, query, where, orderBy, getDocs, doc, getDoc } from 'firebase/firestore';
+import { useToast } from '@/hooks/use-toast';
+import { Loader2, BellRing, BellOff } from 'lucide-react';
+import { formatDistanceToNow } from 'date-fns';
+import { useRouter } from 'next/navigation';
+import Header from '@/components/Header';
+import BottomNavBar from '@/components/BottomNavBar';
+import { Card, CardContent } from '@/components/ui/card';
+import { markNotificationAsRead } from '@/app/actions';
+import { cn } from '@/lib/utils';
 import type { UserProfile } from '@/lib/types';
-import { useI18n } from '@/context/i18n-context'
+import { useI18n } from '@/context/i18n-context';
 
 type Notification = {
-  id: string
-  title: string
-  description: string
-  link: string
-  is_read: boolean
-  created_at: string
-}
+  id: string;
+  title: string;
+  description: string;
+  link: string;
+  is_read: boolean;
+  created_at: string;
+};
 
 export default function NotificationsPage() {
-  const supabase = createClient()
-  const { toast } = useToast()
-  const router = useRouter()
+  const { toast } = useToast();
+  const router = useRouter();
   const [profile, setProfile] = React.useState<UserProfile | null>(null);
-  const [notifications, setNotifications] = React.useState<Notification[]>([])
-  const [loading, setLoading] = React.useState(true)
+  const [notifications, setNotifications] = React.useState<Notification[]>([]);
+  const [loading, setLoading] = React.useState(true);
   const { t } = useI18n();
 
   React.useEffect(() => {
-    const fetchUserAndNotifications = async () => {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) {
-        router.push('/login')
-        return
-      }
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      setLoading(true);
+      if (currentUser) {
+        try {
+          const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
+          if (userDoc.exists()) setProfile(userDoc.data() as UserProfile);
 
-      const { data: profileData } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', user.id)
-          .single();
-      setProfile(profileData);
-
-
-      setLoading(true)
-      const { data, error } = await supabase
-        .from('notifications')
-        .select('*')
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false })
-
-      if (error) {
-        toast({
-          variant: 'destructive',
-          title: 'Error',
-          description: 'Could not fetch notifications.',
-        })
+          const q = query(
+            collection(db, 'notifications'),
+            where('user_id', '==', currentUser.uid),
+            orderBy('created_at', 'desc')
+          );
+          const snapshot = await getDocs(q);
+          const list: Notification[] = [];
+          snapshot.forEach((d) => {
+            list.push({ id: d.id, ...d.data() } as Notification);
+          });
+          setNotifications(list);
+        } catch (error: any) {
+          if (error?.code === 'permission-denied') {
+            console.warn('Notifications permission denied (check Firebase rules).');
+            setNotifications([]);
+          } else {
+            console.error('Error fetching notifications:', error);
+          }
+        }
       } else {
-        setNotifications(data as Notification[])
+        router.push('/login');
       }
-      setLoading(false)
-    }
+      setLoading(false);
+    });
 
-    fetchUserAndNotifications()
-  }, [supabase, toast, router])
+    return () => unsubscribe();
+  }, [router, toast]);
 
   const handleNotificationClick = async (notification: Notification) => {
     if (!notification.is_read) {
       setNotifications(prev =>
         prev.map(n => (n.id === notification.id ? { ...n, is_read: true } : n))
-      )
-      await markNotificationAsRead(notification.id)
+      );
+      await markNotificationAsRead(notification.id);
     }
-    router.push(notification.link)
-  }
+    router.push(notification.link);
+  };
 
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <Loader2 className="h-8 w-8 animate-spin" />
       </div>
-    )
+    );
   }
 
   return (
@@ -121,7 +118,7 @@ export default function NotificationsPage() {
                           {t(notification.description)}
                         </p>
                         <p className="text-xs text-muted-foreground mt-2">
-                          {formatDistanceToNow(new Date(notification.created_at), { addSuffix: true })}
+                          {formatDistanceToNow(new Date(notification.created_at || Date.now()), { addSuffix: true })}
                         </p>
                       </div>
                       <BellRing className="h-5 w-5 text-muted-foreground" />
@@ -143,7 +140,5 @@ export default function NotificationsPage() {
       </main>
       <BottomNavBar activeView="my-reports" />
     </>
-  )
+  );
 }
-
-    

@@ -1,0 +1,62 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Users Collection
+    match /users/{userId} {
+      allow read: if true;
+      allow create: if isAuthenticated();
+      allow update, delete: if isOwner(userId);
+    }
+
+    // Issues Collection
+    match /issues/{issueId} {
+      allow read: if true;
+      allow create: if isAuthenticated();
+      allow update, delete: if isAuthenticated();
+
+      // Comments Sub-collection
+      match /comments/{commentId} {
+        allow read: if true;
+        allow create, update, delete: if isAuthenticated();
+      }
+
+      // Votes Sub-collection
+      match /votes/{userId} {
+        allow read: if true;
+        allow write: if isAuthenticated();
+      }
+    }
+
+    // Quotes Collection (Workers & Admins)
+    match /quotes/{quoteId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Ratings Collection
+    match /ratings/{ratingId} {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
+
+    // Notifications Collection
+    match /notifications/{notificationId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Translations Cache
+    match /translations/{translationId} {
+      allow read, write: if true;
+    }
+  }
+}

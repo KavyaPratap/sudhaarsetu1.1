@@ -264,7 +264,7 @@ export default function ReportIssueForm({
        }
       form.reset();
       setPhotoPreviews([]);
-    } else if (state?.nearbyIssues) {
+    } else if (state && !state.success && state.nearbyIssues) {
       setNearbyIssues(state.nearbyIssues);
       setShowDuplicateDialog(true);
     }
@@ -547,7 +547,7 @@ export default function ReportIssueForm({
         <AlertDialogContent>
             <AlertDialogHeader>
                 <AlertDialogTitle>{t('Similar Report Found!')}</AlertDialogTitle>
-                <AlertDialogDescription>
+                <AlertDialogDescription asChild>
                     <div>
                         <p>{t('A similar issue has already been reported nearby. Your report will be added as an upvote to the existing issue.')}</p>
                         <div className="mt-4 space-y-2">

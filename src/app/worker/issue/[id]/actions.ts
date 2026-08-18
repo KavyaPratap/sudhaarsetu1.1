@@ -1,71 +1,58 @@
-
 'use server';
 
-import { createClient } from '@/lib/supabase/server';
-import { cookies } from 'next/headers';
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
-import { redirect } from 'next/navigation';
+import { adminDb } from '@/lib/firebase/admin';
+import { getCurrentUser } from '@/lib/firebase/server-auth';
 
 const submitQuoteSchema = z.object({
   price: z.coerce.number().positive("Price must be a positive number."),
   estimated_days: z.coerce.number().int().positive("Estimated days must be a positive whole number."),
   comment: z.string().optional(),
-  issueId: z.string().uuid(),
+  issueId: z.string(),
 });
 
 export async function submitQuote(
-    prevState: { success: boolean; error?: string } | null,
-    formData: FormData
+  prevState: { success: boolean; error?: string } | null,
+  formData: FormData
 ): Promise<{ success: boolean; error?: string }> {
-        
-    const cookieStore = cookies();
-    const supabase = createClient(cookieStore);
+  const user = await getCurrentUser();
+  if (!user || user.role !== 'worker') {
+    return { success: false, error: 'You are not authorized to perform this action.' };
+  }
 
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-        return { success: false, error: 'You are not authenticated.' };
+  const parseResult = submitQuoteSchema.safeParse(Object.fromEntries(formData.entries()));
+  if (!parseResult.success) {
+    const firstError = parseResult.error.errors[0]?.message || 'Invalid data provided.';
+    return { success: false, error: firstError };
+  }
+
+  const { price, estimated_days, comment, issueId } = parseResult.data;
+
+  try {
+    const quoteRef = adminDb.collection('quotes').doc(`${issueId}_${user.id}`);
+    const existingQuote = await quoteRef.get();
+
+    if (existingQuote.exists) {
+      return { success: false, error: 'You have already submitted a quote for this issue.' };
     }
 
-    const { data: profile } = await supabase
-        .from('profiles')
-        .select('role')
-        .eq('id', user.id)
-        .single();
-    
-    if (profile?.role !== 'worker') {
-        return { success: false, error: 'You are not authorized to perform this action.' };
-    }
-
-    const parseResult = submitQuoteSchema.safeParse(Object.fromEntries(formData.entries()));
-    if (!parseResult.success) {
-        const firstError = parseResult.error.errors[0]?.message || 'Invalid data provided.';
-        return { success: false, error: firstError};
-    }
-
-    const { price, estimated_days, comment, issueId } = parseResult.data;
-
-    const { error } = await supabase
-        .from('quotes')
-        .insert({
-            issue_id: issueId,
-            worker_id: user.id,
-            price,
-            estimated_days,
-            comment,
-            status: 'pending'
-        })
-    
-    if (error) {
-        console.error("Error submitting quote:", error);
-        if (error.code === '23505') { // unique constraint violation
-            return { success: false, error: 'You have already submitted a quote for this issue.' };
-        }
-        return { success: false, error: `Failed to submit quote: ${error.message}` };
-    }
+    await quoteRef.set({
+      id: quoteRef.id,
+      issue_id: issueId,
+      worker_id: user.id,
+      price,
+      estimated_days,
+      comment: comment || '',
+      status: 'pending',
+      created_at: new Date().toISOString(),
+    });
 
     revalidatePath(`/admin/issue/${issueId}`);
-    
-    return { success: true };
-}
 
+    return { success: true };
+  } catch (error: any) {
+    console.error("Error submitting quote:", error);
+    return { success: false, error: `Failed to submit quote: ${error.message}` };
+  }
+}

@@ -1,8 +1,8 @@
-
 'use client';
 
 import * as React from 'react';
-import { useFormState, useFormStatus } from 'react-dom';
+import { useActionState } from 'react';
+import { useFormStatus } from 'react-dom';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
@@ -12,7 +12,7 @@ import { useToast } from '@/hooks/use-toast';
 import { submitQuote } from './actions';
 import { useRouter } from 'next/navigation';
 
-function SubmitButton({disabled}: {disabled: boolean}) {
+function SubmitButton({ disabled }: { disabled: boolean }) {
   const { pending } = useFormStatus();
   return (
     <Button type="submit" disabled={pending || disabled} className="w-full">
@@ -26,7 +26,7 @@ export default function SubmitQuoteForm({ issueId }: { issueId: string }) {
   const { toast } = useToast();
   const router = useRouter();
 
-  const [state, formAction] = useFormState(submitQuote, null);
+  const [state, formAction] = useActionState(submitQuote, null);
 
   React.useEffect(() => {
     if (state?.success) {
@@ -42,12 +42,12 @@ export default function SubmitQuoteForm({ issueId }: { issueId: string }) {
       <input type="hidden" name="issueId" value={issueId} />
       <div className="grid grid-cols-2 gap-4">
         <div className="space-y-2">
-            <Label htmlFor="price">Your Price (₹)</Label>
-            <Input id="price" name="price" type="number" placeholder="e.g., 5000" required />
+          <Label htmlFor="price">Your Price (₹)</Label>
+          <Input id="price" name="price" type="number" placeholder="e.g., 5000" required />
         </div>
         <div className="space-y-2">
-            <Label htmlFor="estimated_days">Est. Days</Label>
-            <Input id="estimated_days" name="estimated_days" type="number" placeholder="e.g., 3" required/>
+          <Label htmlFor="estimated_days">Est. Days</Label>
+          <Input id="estimated_days" name="estimated_days" type="number" placeholder="e.g., 3" required />
         </div>
       </div>
       <div className="space-y-2">
@@ -62,4 +62,3 @@ export default function SubmitQuoteForm({ issueId }: { issueId: string }) {
     </form>
   );
 }
-

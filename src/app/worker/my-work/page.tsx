@@ -1,7 +1,8 @@
-
 import * as React from 'react';
-import { cookies } from 'next/headers';
-import { createClient } from '@/lib/supabase/server';
+
+export const dynamic = 'force-dynamic';
+import { adminDb } from '@/lib/firebase/admin';
+import { getCurrentUser } from '@/lib/firebase/server-auth';
 import type { Issue } from '@/lib/types';
 import {
   Card,
@@ -23,92 +24,102 @@ const statusColors: Record<string, string> = {
 };
 
 async function getAssignedIssues(userId: string) {
-    const cookieStore = cookies();
-    const supabase = createClient(cookieStore);
+  try {
+    const snapshot = await adminDb
+      .collection('issues')
+      .where('assigned_worker_id', '==', userId)
+      .get();
 
-    const { data, error } = await supabase
-        .from('issues')
-        .select('*, quotes!winning_quote_id(*)')
-        .in('status', ['In Progress', 'Work Complete', 'Resolved'])
-        .eq('assigned_worker_id', userId)
-        .order('reportedAt', { ascending: false });
+    const issues: any[] = [];
+    for (const docSnap of snapshot.docs) {
+      const data = docSnap.data();
+      let winningQuote = null;
+      if (data.winning_quote_id) {
+        const qDoc = await adminDb.collection('quotes').doc(data.winning_quote_id).get();
+        if (qDoc.exists) winningQuote = qDoc.data();
+      }
 
-    if (error) {
-        console.error("Error fetching assigned issues:", error);
-        return [];
+      issues.push({
+        ...data,
+        id: docSnap.id,
+        quotes: winningQuote,
+        reportedAt: new Date(data.reportedAt || Date.now()),
+      });
     }
-    
-    return data as (Issue & { quotes: { price: number, estimated_days: number } | null })[];
+
+    issues.sort((a, b) => new Date(b.reportedAt).getTime() - new Date(a.reportedAt).getTime());
+    return issues;
+  } catch (error) {
+    console.error("Error fetching assigned issues:", error);
+    return [];
+  }
 }
 
-function AssignedIssueCard({ issue }: { issue: Issue & { quotes: { price: number, estimated_days: number } | null } }) {
-    return (
-        <Card>
-            <CardHeader>
-                <div className="flex justify-between items-start flex-wrap gap-2">
-                    <div>
-                        <CardTitle>{issue.title}</CardTitle>
-                        <CardDescription className="flex items-center text-xs text-muted-foreground gap-1 mt-1">
-                            <MapPin className="h-3 w-3" /> {issue.address}
-                        </CardDescription>
-                    </div>
-                     <Badge variant="outline" className={statusColors[issue.status]}>{issue.status}</Badge>
-                </div>
-            </CardHeader>
-            <CardContent>
-                {issue.quotes && (
-                    <div className="flex justify-between items-center text-sm font-semibold p-3 bg-secondary rounded-md">
-                        <div className="flex items-center gap-2">
-                            <CheckCircle className="h-5 w-5 text-green-600"/>
-                            <span>Your Quote: ₹{issue.quotes.price}</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                            <Clock className="h-5 w-5 text-blue-600"/>
-                            <span>Est. {issue.quotes.estimated_days} days</span>
-                        </div>
-                    </div>
-                )}
-            </CardContent>
-            <CardFooter className="flex justify-end">
-                <Button asChild variant="outline" size="sm">
-                    <Link href={`/worker/my-work/${issue.id}`}>
-                        Update Status <ArrowRight className="ml-2 h-4 w-4" />
-                    </Link>
-                </Button>
-            </CardFooter>
-        </Card>
-    )
+function AssignedIssueCard({ issue }: { issue: any }) {
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex justify-between items-start flex-wrap gap-2">
+          <div>
+            <CardTitle>{issue.title}</CardTitle>
+            <CardDescription className="flex items-center text-xs text-muted-foreground gap-1 mt-1">
+              <MapPin className="h-3 w-3" /> {issue.address}
+            </CardDescription>
+          </div>
+          <Badge variant="outline" className={statusColors[issue.status] || 'bg-secondary'}>{issue.status}</Badge>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {issue.quotes && (
+          <div className="flex justify-between items-center text-sm font-semibold p-3 bg-secondary rounded-md">
+            <div className="flex items-center gap-2">
+              <CheckCircle className="h-5 w-5 text-green-600"/>
+              <span>Your Quote: ₹{issue.quotes.price}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Clock className="h-5 w-5 text-blue-600"/>
+              <span>Est. {issue.quotes.estimated_days} days</span>
+            </div>
+          </div>
+        )}
+      </CardContent>
+      <CardFooter className="flex justify-end">
+        <Button asChild variant="outline" size="sm">
+          <Link href={`/worker/my-work/${issue.id}`}>
+            Update Status <ArrowRight className="ml-2 h-4 w-4" />
+          </Link>
+        </Button>
+      </CardFooter>
+    </Card>
+  );
 }
 
 export default async function MyWorkPage() {
-    const cookieStore = cookies();
-    const supabase = createClient(cookieStore);
-    const { data: { user } } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
+  if (!user) return null;
 
-    if (!user) return null;
+  const issues = await getAssignedIssues(user.id);
 
-    const issues = await getAssignedIssues(user.id);
-  
-    return (
-        <div className="flex flex-col gap-6">
-            <div>
-                <h1 className="text-3xl font-bold tracking-tight">My Work</h1>
-                <p className="text-muted-foreground">A list of all issues assigned to you.</p>
-            </div>
+  return (
+    <div className="flex flex-col gap-6">
+      <div>
+        <h1 className="text-3xl font-bold tracking-tight">My Work</h1>
+        <p className="text-muted-foreground">A list of all issues assigned to you.</p>
+      </div>
 
-            <div className="space-y-4">
-                {issues.length > 0 ? (
-                    issues.map(issue => <AssignedIssueCard key={issue.id} issue={issue} />)
-                ) : (
-                    <Card className="flex flex-col items-center justify-center p-12 text-center">
-                        <CardTitle>No Assigned Work</CardTitle>
-                        <CardDescription className="mt-2">You have not been assigned any issues yet. Go to the feed to quote on new jobs.</CardDescription>
-                        <Button asChild className="mt-4">
-                            <Link href="/worker">Find Work</Link>
-                        </Button>
-                    </Card>
-                )}
-            </div>
-        </div>
-    );
+      <div className="space-y-4">
+        {issues.length > 0 ? (
+          issues.map(issue => <AssignedIssueCard key={issue.id} issue={issue} />)
+        ) : (
+          <Card className="flex flex-col items-center justify-center p-12 text-center">
+            <CardTitle>No Assigned Work</CardTitle>
+            <CardDescription className="mt-2">You have not been assigned any issues yet. Go to the feed to quote on new jobs.</CardDescription>
+            <Button asChild className="mt-4">
+              <Link href="/worker">Find Work</Link>
+            </Button>
+          </Card>
+        )}
+      </div>
+    </div>
+  );
 }

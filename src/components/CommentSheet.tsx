@@ -1,4 +1,3 @@
-
 'use client';
 
 import * as React from 'react';
@@ -10,7 +9,8 @@ import {
   SheetDescription,
 } from '@/components/ui/sheet';
 import type { Issue, Comment } from '@/lib/types';
-import { createClient } from '@/lib/supabase/client';
+import { db } from '@/lib/firebase/config';
+import { collection, getDocs, doc, getDoc, query, orderBy } from 'firebase/firestore';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, Send } from 'lucide-react';
 import { format } from 'date-fns';
@@ -77,11 +77,9 @@ function CommentForm({
   );
 }
 
-
 export default function CommentSheet({ issue, open, onOpenChange }: CommentSheetProps) {
   const [comments, setComments] = React.useState<Comment[]>([]);
   const [loadingComments, setLoadingComments] = React.useState(true);
-  const supabase = createClient();
   const { toast } = useToast();
 
   React.useEffect(() => {
@@ -89,51 +87,56 @@ export default function CommentSheet({ issue, open, onOpenChange }: CommentSheet
 
     const fetchComments = async () => {
       setLoadingComments(true);
-      const { data, error } = await supabase
-        .from('comments')
-        .select(
-          `
-          id,
-          content,
-          created_at,
-          user_id,
-          profiles (
-            full_name,
-            avatar_url
-          )
-        `
-        )
-        .eq('issue_id', issue.id)
-        .order('created_at', { ascending: true });
+      try {
+        const commentsRef = collection(db, 'issues', issue.id, 'comments');
+        const q = query(commentsRef, orderBy('created_at', 'asc'));
+        const snapshot = await getDocs(q);
 
-      if (error) {
+        const fetched: Comment[] = [];
+        for (const commentDoc of snapshot.docs) {
+          const data = commentDoc.data();
+          let author = 'Anonymous';
+          let avatar = '';
+
+          if (data.user_id) {
+            try {
+              const uDoc = await getDoc(doc(db, 'users', data.user_id));
+              if (uDoc.exists()) {
+                author = uDoc.data()?.full_name || 'Anonymous';
+                avatar = uDoc.data()?.avatar_url || '';
+              }
+            } catch {}
+          }
+
+          fetched.push({
+            id: commentDoc.id,
+            author,
+            avatar,
+            text: data.content || '',
+            timestamp: new Date(data.created_at),
+            user_id: data.user_id,
+          });
+        }
+        setComments(fetched);
+      } catch (error) {
         console.error('Error fetching comments:', error);
         toast({
           variant: 'destructive',
           title: 'Error',
           description: 'Could not load comments.',
         });
-      } else {
-        const formattedComments = data.map((comment: any) => ({
-          id: comment.id,
-          author: comment.profiles.full_name || 'Anonymous',
-          avatar: comment.profiles.avatar_url || '',
-          text: comment.content,
-          timestamp: new Date(comment.created_at),
-          user_id: comment.user_id,
-        }));
-        setComments(formattedComments);
+      } finally {
+        setLoadingComments(false);
       }
-      setLoadingComments(false);
     };
 
     fetchComments();
-  }, [issue.id, supabase, toast, open]);
+  }, [issue.id, toast, open]);
 
   const handleCommentAdded = (newComment: Comment) => {
     setComments(prevComments => [...prevComments, newComment]);
   };
-  
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="flex flex-col p-0">

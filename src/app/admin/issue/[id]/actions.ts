@@ -1,148 +1,145 @@
-
 'use server';
 
-import { createClient } from '@/lib/supabase/server';
-import { cookies } from 'next/headers';
 import { revalidatePath } from 'next/cache';
-import type { IssueStatus, TimelineEvent } from '@/lib/types';
 import { z } from 'zod';
+import { adminDb } from '@/lib/firebase/admin';
+import { getCurrentUser } from '@/lib/firebase/server-auth';
+import type { TimelineEvent } from '@/lib/types';
 
 const statusUpdateSchema = z.object({
   status: z.enum(["Pending", "In Progress", "Redirected", "Resolved", "Rejected"]),
   notes: z.string().optional(),
-  issueId: z.string().uuid(),
-  timeline: z.string(),
+  issueId: z.string(),
+  timeline: z.string().optional(),
 });
 
 export async function updateIssueStatus(
-    prevState: { success: boolean; error?: string } | null,
-    formData: FormData
+  prevState: { success: boolean; error?: string } | null,
+  formData: FormData
 ): Promise<{ success: boolean; error?: string }> {
-        
-    const cookieStore = cookies();
-    const supabase = createClient(cookieStore);
+  const user = await getCurrentUser();
+  if (!user || user.role !== 'admin') {
+    return { success: false, error: 'You are not authorized to perform this action.' };
+  }
 
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-        return { success: false, error: 'You are not authenticated.' };
+  const parseResult = statusUpdateSchema.safeParse(Object.fromEntries(formData.entries()));
+  if (!parseResult.success) {
+    return { success: false, error: "Invalid form data provided." };
+  }
+
+  const { status: newStatus, notes, issueId } = parseResult.data;
+
+  try {
+    const issueRef = adminDb.collection('issues').doc(issueId);
+    const issueDoc = await issueRef.get();
+
+    if (!issueDoc.exists) {
+      return { success: false, error: "Issue not found." };
     }
 
-    const { data: profile } = await supabase
-        .from('profiles')
-        .select('role')
-        .eq('id', user.id)
-        .single();
-    
-    if (profile?.role !== 'admin') {
-        return { success: false, error: 'You are not authorized to perform this action.' };
-    }
-
-    const parseResult = statusUpdateSchema.safeParse(Object.fromEntries(formData.entries()));
-    if (!parseResult.success) {
-        return { success: false, error: "Invalid form data provided."};
-    }
-
-    const { status: newStatus, notes, issueId, timeline: currentTimelineString } = parseResult.data;
-
-    const { data: issueToUpdate } = await supabase
-        .from('issues')
-        .select('timeline, reportedBy')
-        .eq('id', issueId)
-        .single();
-    
-    if (!issueToUpdate) {
-        return { success: false, error: "Issue not found." };
-    }
+    const issueData = issueDoc.data()!;
+    const currentTimeline: TimelineEvent[] = issueData.timeline || [];
 
     const newTimelineEvent: TimelineEvent = {
-        status: newStatus,
-        date: new Date().toISOString(),
-        notes: notes?.trim() ? notes.trim() : `Status updated to ${newStatus}.`,
+      status: newStatus,
+      date: new Date().toISOString(),
+      notes: notes?.trim() ? notes.trim() : `Status updated to ${newStatus}.`,
     };
 
-    const updatedTimeline = [...(issueToUpdate.timeline || []), newTimelineEvent];
+    const updatedTimeline = [...currentTimeline, newTimelineEvent];
 
-    const { data: issueData, error: updateError } = await supabase
-        .from('issues')
-        .update({
-            status: newStatus,
-            timeline: updatedTimeline,
-        })
-        .eq('id', issueId)
-        .select('title, reportedBy')
-        .single();
+    await issueRef.update({
+      status: newStatus,
+      timeline: updatedTimeline,
+    });
 
-    if (updateError) {
-        console.error("Error updating issue status:", updateError);
-        return { success: false, error: `Failed to update the issue status in the database: ${updateError.message}` };
+    if (issueData.reportedBy) {
+      const notificationRef = adminDb.collection('notifications').doc();
+      await notificationRef.set({
+        id: notificationRef.id,
+        user_id: issueData.reportedBy,
+        title: `Your report status has been updated to "${newStatus}"`,
+        description: `Report: ${issueData.title}`,
+        link: `/my-reports`,
+        is_read: false,
+        created_at: new Date().toISOString(),
+      });
     }
 
-     // Create a notification for the user who reported the issue
-    if (issueData) {
-        const { error: notificationError } = await supabase.from('notifications').insert({
-            user_id: issueData.reportedBy,
-            title: `Your report status has been updated to "${newStatus}"`,
-            description: `Report: ${issueData.title}`,
-            link: `/my-reports`,
-        });
-
-        if (notificationError) {
-            console.error("Error creating notification:", notificationError);
-        }
-    }
-
-    // Revalidate the paths to ensure the UI updates with the new data.
     revalidatePath(`/admin/issue/${issueId}`);
     revalidatePath('/admin');
-    revalidatePath('/my-reports'); // Revalidate user's report page too
+    revalidatePath('/my-reports');
 
     return { success: true };
+  } catch (error: any) {
+    console.error("Error updating issue status:", error);
+    return { success: false, error: `Failed to update issue status: ${error.message}` };
+  }
 }
 
 const approveQuoteSchema = z.object({
-  issueId: z.string().uuid(),
-  quoteId: z.string().uuid(),
-  workerId: z.string().uuid(),
+  issueId: z.string(),
+  quoteId: z.string(),
+  workerId: z.string(),
 });
 
-
 export async function approveQuote(
-    issueId: string,
-    quoteId: string,
-    workerId: string
+  issueId: string,
+  quoteId: string,
+  workerId: string
 ): Promise<{ success: boolean; error?: string }> {
-    const cookieStore = cookies();
-    const supabase = createClient(cookieStore);
+  const user = await getCurrentUser();
+  if (!user || user.role !== 'admin') {
+    return { success: false, error: 'You are not authorized.' };
+  }
 
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return { success: false, error: 'You are not authenticated.' };
-    
-    const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).single();
-    if (profile?.role !== 'admin') return { success: false, error: 'You are not authorized.' };
+  const parseResult = approveQuoteSchema.safeParse({ issueId, quoteId, workerId });
+  if (!parseResult.success) return { success: false, error: "Invalid data provided." };
 
-    const parseResult = approveQuoteSchema.safeParse({ issueId, quoteId, workerId });
-    if (!parseResult.success) return { success: false, error: "Invalid data provided." };
+  try {
+    await adminDb.runTransaction(async (transaction) => {
+      const issueRef = adminDb.collection('issues').doc(issueId);
+      const quoteRef = adminDb.collection('quotes').doc(quoteId);
 
-    try {
-        const { error: transactionError } = await supabase.rpc('approve_quote_and_assign_issue', {
-            p_quote_id: quoteId,
-            p_issue_id: issueId,
-            p_worker_id: workerId,
-            p_admin_id: user.id // Pass the admin's ID
-        });
+      // All READS must be performed BEFORE any WRITES in a Firestore transaction
+      const issueDoc = await transaction.get(issueRef);
 
-        if (transactionError) {
-            console.error('Error in approve_quote RPC:', transactionError);
-            throw new Error('Failed to approve quote. The database operation failed.');
+      const otherQuotesSnapshot = await adminDb
+        .collection('quotes')
+        .where('issue_id', '==', issueId)
+        .get();
+
+      // All WRITES performed after reads
+      transaction.update(quoteRef, { status: 'approved' });
+
+      otherQuotesSnapshot.forEach((doc) => {
+        if (doc.id !== quoteId) {
+          transaction.update(doc.ref, { status: 'rejected' });
         }
+      });
 
-    } catch (error: any) {
-        return { success: false, error: error.message };
-    }
+      const currentTimeline: TimelineEvent[] = issueDoc.data()?.timeline || [];
+      const newTimelineEvent: TimelineEvent = {
+        status: 'In Progress',
+        date: new Date().toISOString(),
+        notes: 'Quote approved. Work assigned to worker.',
+      };
+
+      transaction.update(issueRef, {
+        status: 'In Progress',
+        assigned_worker_id: workerId,
+        winning_quote_id: quoteId,
+        timeline: [...currentTimeline, newTimelineEvent],
+      });
+    });
 
     revalidatePath(`/admin/issue/${issueId}`);
     revalidatePath('/admin');
-    revalidatePath(`/worker/my-work`);
-    
+    revalidatePath('/worker/my-work');
+
     return { success: true };
+  } catch (error: any) {
+    console.error('Error approving quote:', error);
+    return { success: false, error: error.message };
+  }
 }

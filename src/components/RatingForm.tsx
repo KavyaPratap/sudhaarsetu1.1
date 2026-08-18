@@ -11,7 +11,6 @@ import { Loader2, Star } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import type { Issue } from '@/lib/types';
 import { submitRating } from '@/app/actions';
-import { User } from '@supabase/supabase-js';
 import { cn } from '@/lib/utils';
 
 function SubmitButton() {
@@ -26,7 +25,7 @@ function SubmitButton() {
 
 interface RatingFormProps {
   issue: Issue;
-  user: User;
+  user: { id?: string; uid?: string };
 }
 
 export default function RatingForm({ issue, user }: RatingFormProps) {

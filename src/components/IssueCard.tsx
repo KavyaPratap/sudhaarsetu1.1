@@ -30,9 +30,10 @@ interface IssueCardProps {
   onSelectIssue: (issueId: string) => void;
 }
 
-const statusColors = {
+const statusColors: Record<string, string> = {
   Pending: 'bg-yellow-500',
   'In Progress': 'bg-blue-500',
+  'Work Complete': 'bg-purple-500',
   Resolved: 'bg-green-500',
   Rejected: 'bg-red-500',
   Redirected: 'bg-purple-500',
@@ -103,17 +104,21 @@ export default function IssueCard({ issue, onValidate, onSelectIssue }: IssueCar
     <>
       <Card className="w-full overflow-hidden transition-shadow hover:shadow-lg cursor-pointer" onClick={() => onSelectIssue(issue.id)}>
         <div className="grid md:grid-cols-3">
-          <div className="md:col-span-1 relative h-48 md:h-full w-full">
-            {issue.imageUrls && issue.imageUrls.length > 0 && (
+          <div className="md:col-span-1 relative h-48 md:h-full w-full bg-secondary">
+            {issue.imageUrls && issue.imageUrls.length > 0 && issue.imageUrls[0] ? (
               <Image
                 src={issue.imageUrls[0]}
-                alt={issue.title}
+                alt={issue.title || 'Issue photo'}
                 fill
+                unoptimized={
+                  typeof issue.imageUrls[0] === 'string' &&
+                  (issue.imageUrls[0].startsWith('data:') || issue.imageUrls[0].startsWith('blob:'))
+                }
                 style={{ objectFit: 'cover' }}
                 data-ai-hint="issue photo"
                 className="bg-secondary"
               />
-            )}
+            ) : null}
           </div>
           <div className="md:col-span-2 flex flex-col">
             <CardHeader>

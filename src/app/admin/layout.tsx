@@ -1,17 +1,10 @@
-
 import * as React from 'react';
 import Link from 'next/link';
 import {
-  Bell,
-  Home,
-  Package2,
-  Users,
-  LineChart,
-  Settings,
   ListOrdered,
   LogOut,
-  PenSquare,
   Building,
+  LineChart,
   PanelLeft,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -33,127 +26,95 @@ import {
 import { Sheet, SheetContent, SheetTrigger, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { logout } from '@/app/login/actions';
 import SudhaarSetuLogo from '@/components/SudhaarSetuLogo';
-import { cookies } from 'next/headers';
-import { createClient } from '@/lib/supabase/server';
+import { getCurrentUser } from '@/lib/firebase/server-auth';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import type { UserProfile } from '@/lib/types';
 import NotificationBell from '@/components/NotificationBell';
 import { redirect } from 'next/navigation';
 
 async function AdminHeader() {
-    const cookieStore = cookies();
-    const supabase = createClient(cookieStore);
-    const { data: { user } } = await supabase.auth.getUser();
-    
-    // User should exist due to layout check, but good practice to handle
-    if (!user) {
-        return null;
-    }
+  const user = await getCurrentUser();
+  if (!user) return null;
 
-    const { data: profile } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', user.id)
-        .single() as { data: UserProfile };
-
-    // Profile should also exist, but good practice
-    if (!profile) {
-        return null;
-    }
-
-
-    return (
-         <header className="flex h-14 items-center gap-4 border-b bg-muted/40 px-4 lg:h-[60px] lg:px-6">
-            <div className="md:hidden">
-                <Sheet>
-                    <SheetTrigger asChild>
-                        <Button variant="outline" size="icon">
-                            <PanelLeft className="h-5 w-5" />
-                            <span className="sr-only">Toggle navigation menu</span>
-                        </Button>
-                    </SheetTrigger>
-                    <SheetContent side="left" className="flex flex-col">
-                         <SheetHeader>
-                            <SheetTitle className="sr-only">Admin Navigation</SheetTitle>
-                        </SheetHeader>
-                        <Link href="/admin" className="flex items-center gap-2 text-lg font-semibold mb-4">
-                            <SudhaarSetuLogo className="h-6 w-6 text-primary" />
-                            <span>Admin Panel</span>
-                        </Link>
-                        <nav className="grid gap-2 text-lg font-medium">
-                            <Link href="/admin" className="text-muted-foreground hover:text-foreground flex items-center gap-3">
-                                <ListOrdered className="h-5 w-5" /> All Issues
-                            </Link>
-                            <Link href="/admin/departments" className="text-muted-foreground hover:text-foreground flex items-center gap-3">
-                                <Building className="h-5 w-5" /> Departments
-                            </Link>
-                            <Link href="/admin/analytics" className="text-muted-foreground hover:text-foreground flex items-center gap-3">
-                                <LineChart className="h-5 w-5" /> Analytics
-                            </Link>
-                        </nav>
-                    </SheetContent>
-                </Sheet>
-            </div>
-            <div className="w-full flex-1">
-                {/* Can add a search bar here later */}
-            </div>
-            <NotificationBell userId={user!.id} />
-            <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="secondary" size="icon" className="rounded-full">
-                 <Avatar>
-                    <AvatarImage src={profile.avatar_url} />
-                    <AvatarFallback>{profile.full_name?.charAt(0) || 'A'}</AvatarFallback>
-                </Avatar>
-                <span className="sr-only">Toggle user menu</span>
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuLabel>
-                <p>{profile.full_name || 'Admin'}</p>
-                <p className="text-xs font-normal text-muted-foreground">Administrator</p>
-              </DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem asChild>
-                <Link href="/profile">Profile Settings</Link>
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-               <form action={logout}>
-                  <DropdownMenuItem asChild>
-                      <button type="submit" className="w-full text-left">
-                          <LogOut className="mr-2 h-4 w-4" />
-                          <span>Log out</span>
-                      </button>
-                  </DropdownMenuItem>
-              </form>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </header>
-    )
+  return (
+    <header className="flex h-14 items-center gap-4 border-b bg-muted/40 px-4 lg:h-[60px] lg:px-6">
+      <div className="md:hidden">
+        <Sheet>
+          <SheetTrigger asChild>
+            <Button variant="outline" size="icon">
+              <PanelLeft className="h-5 w-5" />
+              <span className="sr-only">Toggle navigation menu</span>
+            </Button>
+          </SheetTrigger>
+          <SheetContent side="left" className="flex flex-col">
+            <SheetHeader>
+              <SheetTitle className="sr-only">Admin Navigation</SheetTitle>
+            </SheetHeader>
+            <Link href="/admin" className="flex items-center gap-2 text-lg font-semibold mb-4">
+              <SudhaarSetuLogo className="h-6 w-6 text-primary" />
+              <span>Admin Panel</span>
+            </Link>
+            <nav className="grid gap-2 text-lg font-medium">
+              <Link href="/admin" className="text-muted-foreground hover:text-foreground flex items-center gap-3">
+                <ListOrdered className="h-5 w-5" /> All Issues
+              </Link>
+              <Link href="/admin/departments" className="text-muted-foreground hover:text-foreground flex items-center gap-3">
+                <Building className="h-5 w-5" /> Departments
+              </Link>
+              <Link href="/admin/analytics" className="text-muted-foreground hover:text-foreground flex items-center gap-3">
+                <LineChart className="h-5 w-5" /> Analytics
+              </Link>
+            </nav>
+          </SheetContent>
+        </Sheet>
+      </div>
+      <div className="w-full flex-1" />
+      <NotificationBell userId={user.id} />
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="secondary" size="icon" className="rounded-full">
+            <Avatar>
+              <AvatarImage src="" />
+              <AvatarFallback>{user.full_name?.charAt(0) || 'A'}</AvatarFallback>
+            </Avatar>
+            <span className="sr-only">Toggle user menu</span>
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuLabel>
+            <p>{user.full_name || 'Admin'}</p>
+            <p className="text-xs font-normal text-muted-foreground">Administrator</p>
+          </DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem asChild>
+            <Link href="/profile">Profile Settings</Link>
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <form action={logout}>
+            <DropdownMenuItem asChild>
+              <button type="submit" className="w-full text-left flex items-center">
+                <LogOut className="mr-2 h-4 w-4" />
+                <span>Log out</span>
+              </button>
+            </DropdownMenuItem>
+          </form>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </header>
+  );
 }
-
 
 export default async function AdminLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const cookieStore = cookies();
-  const supabase = createClient(cookieStore);
+  const user = await getCurrentUser();
 
-  const { data: { user } } = await supabase.auth.getUser();
-  
   if (!user) {
     redirect('/login');
   }
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('role')
-    .eq('id', user.id)
-    .single();
-  
-  if (profile?.role !== 'admin') {
+  if (user.role !== 'admin') {
     redirect('/');
   }
 
@@ -164,7 +125,7 @@ export default async function AdminLayout({
           <div className="flex h-14 items-center border-b px-4 lg:h-[60px] lg:px-6">
             <Link href="/" className="flex items-center gap-2 font-semibold">
               <SudhaarSetuLogo className="h-8 w-8 text-primary" />
-              <span className="">SudhaarSetu Admin</span>
+              <span>SudhaarSetu Admin</span>
             </Link>
           </div>
           <div className="flex-1">
@@ -212,7 +173,7 @@ export default async function AdminLayout({
       <div className="flex flex-col">
         <AdminHeader />
         <main className="flex flex-1 flex-col gap-4 p-4 lg:gap-6 lg:p-6">
-            {children}
+          {children}
         </main>
       </div>
     </div>
