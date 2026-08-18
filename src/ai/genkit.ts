@@ -12,11 +12,11 @@ const rawPrivateKey =
 const privateKey = rawPrivateKey ? rawPrivateKey.replace(/\\n/g, '\n') : undefined;
 
 const vertexConfig: any = {
-  projectId: process.env.GCP_PROJECT_ID || 'quesper-2e352',
+  projectId: process.env.GCP_PROJECT_ID || process.env.FIREBASE_PROJECT_ID || 'sudharsetu-5d201',
   location: process.env.GCP_LOCATION || 'us-central1',
 };
 
-if (clientEmail && privateKey && privateKey.includes('-----BEGIN PRIVATE KEY-----') && !privateKey.includes('MIIEvgIBADANBgkqhki')) {
+if (clientEmail && privateKey && privateKey.includes('-----BEGIN PRIVATE KEY-----')) {
   vertexConfig.googleAuth = {
     credentials: {
       client_email: clientEmail,
