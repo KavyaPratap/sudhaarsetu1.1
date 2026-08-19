@@ -46,7 +46,36 @@ export type AnalyzeIssueOutput = z.infer<typeof AnalyzeIssueOutputSchema>;
 export async function analyzeIssue(
   input: AnalyzeIssueInput
 ): Promise<AnalyzeIssueOutput> {
-  return analyzeIssueFlow(input);
+  try {
+    return await analyzeIssueFlow(input);
+  } catch (error) {
+    console.warn('Vertex AI analysis flow encountered a permission/network error, using smart fallback:', error);
+    const spoken = input.spokenDescription?.trim() || '';
+    const title = spoken ? spoken.slice(0, 50) : 'Reported Civic Issue';
+    const description = spoken || 'Civic issue reported with photo attachment. Details will be reviewed by municipal officers.';
+    
+    // Infer category from spoken text if possible
+    let category: 'Water' | 'Electricity' | 'Roads' | 'Waste' | 'Other' = 'Roads';
+    const textLower = spoken.toLowerCase();
+    if (textLower.includes('water') || textLower.includes('pipe') || textLower.includes('leak') || textLower.includes('drain')) {
+      category = 'Water';
+    } else if (textLower.includes('light') || textLower.includes('wire') || textLower.includes('electric') || textLower.includes('power')) {
+      category = 'Electricity';
+    } else if (textLower.includes('garbage') || textLower.includes('trash') || textLower.includes('waste') || textLower.includes('clean')) {
+      category = 'Waste';
+    } else if (textLower.includes('road') || textLower.includes('pothole') || textLower.includes('street') || textLower.includes('traffic')) {
+      category = 'Roads';
+    } else {
+      category = 'Other';
+    }
+
+    return {
+      title,
+      description,
+      category,
+      summary: description.slice(0, 100),
+    };
+  }
 }
 
 const prompt = ai.definePrompt({
